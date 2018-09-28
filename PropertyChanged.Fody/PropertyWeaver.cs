@@ -3,6 +3,7 @@ using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Collections.Generic;
+using TypeSystem = Fody.TypeSystem;
 
 public class PropertyWeaver
 {
@@ -67,8 +68,7 @@ public class PropertyWeaver
             var instruction = instructions[index];
             if (instruction.OpCode == OpCodes.Stfld)
             {
-                var fieldReference = instruction.Operand as FieldReference;
-                if (fieldReference == null)
+                if (!(instruction.Operand is FieldReference fieldReference))
                 {
                     continue;
                 }
@@ -88,8 +88,8 @@ public class PropertyWeaver
                 {
                     continue;
                 }
-                var fieldReference = instruction.Operand as FieldReference;
-                if (fieldReference == null)
+
+                if (!(instruction.Operand is FieldReference fieldReference))
                 {
                     continue;
                 }
@@ -100,7 +100,7 @@ public class PropertyWeaver
                 }
             }
         }
-    }    
+    }
 
     int AddIsChangedSetterCall(int index)
     {
@@ -127,6 +127,10 @@ public class PropertyWeaver
         }
 
         moduleWeaver.LogDebug($"\t\t\t{property.Name}");
+        if (typeNode.EventInvoker.InvokerType == InvokerTypes.BeforeAfterGeneric)
+        {
+            return AddBeforeAfterGenericInvokerCall(index, property);
+        }
         if (typeNode.EventInvoker.InvokerType == InvokerTypes.BeforeAfter)
         {
             return AddBeforeAfterInvokerCall(index, property);
@@ -182,36 +186,37 @@ public class PropertyWeaver
 
     int AddSimpleInvokerCall(int index, PropertyDefinition property)
     {
-        return instructions.Insert(index,
+        index = instructions.Insert(index,
                                    Instruction.Create(OpCodes.Ldarg_0),
-                                   Instruction.Create(OpCodes.Ldstr, property.Name),
-                                   CallEventInvoker());
+                                   Instruction.Create(OpCodes.Ldstr, property.Name));
+
+        return instructions.Insert(index, CallEventInvoker(property).ToArray());
     }
 
     int AddPropertyChangedArgInvokerCall(int index, PropertyDefinition property)
     {
-        return instructions.Insert(index,
+        index = instructions.Insert(index,
                                    Instruction.Create(OpCodes.Ldarg_0),
-                                   Instruction.Create(OpCodes.Ldstr, property.Name),
-                                   Instruction.Create(OpCodes.Newobj, moduleWeaver.ComponentModelPropertyChangedEventConstructorReference),
-                                   CallEventInvoker());
+                                   Instruction.Create(OpCodes.Ldsfld, moduleWeaver.EventArgsCache.GetEventArgsField(property.Name)));
+
+        return instructions.Insert(index, CallEventInvoker(property).ToArray());
     }
 
     int AddSenderPropertyChangedArgInvokerCall(int index, PropertyDefinition property)
     {
-        return instructions.Insert(index,
+        index = instructions.Insert(index,
                                    Instruction.Create(OpCodes.Ldarg_0),
                                    Instruction.Create(OpCodes.Ldarg_0),
-                                   Instruction.Create(OpCodes.Ldstr, property.Name),
-                                   Instruction.Create(OpCodes.Newobj, moduleWeaver.ComponentModelPropertyChangedEventConstructorReference),
-                                   CallEventInvoker());
+                                   Instruction.Create(OpCodes.Ldsfld, moduleWeaver.EventArgsCache.GetEventArgsField(property.Name)));
+
+        return instructions.Insert(index, CallEventInvoker(property).ToArray());
     }
 
-    int AddBeforeAfterInvokerCall(int index, PropertyDefinition property)
+    int AddBeforeAfterGenericInvokerCall(int index, PropertyDefinition property)
     {
-        var beforeVariable = new VariableDefinition(typeSystem.Object);
+        var beforeVariable = new VariableDefinition(property.PropertyType);
         setMethodBody.Variables.Add(beforeVariable);
-        var afterVariable = new VariableDefinition(typeSystem.Object);
+        var afterVariable = new VariableDefinition(property.PropertyType);
         setMethodBody.Variables.Add(afterVariable);
 
         index = InsertVariableAssignmentFromCurrentValue(index, property, afterVariable);
@@ -220,9 +225,29 @@ public class PropertyWeaver
             Instruction.Create(OpCodes.Ldarg_0),
             Instruction.Create(OpCodes.Ldstr, property.Name),
             Instruction.Create(OpCodes.Ldloc, beforeVariable),
-            Instruction.Create(OpCodes.Ldloc, afterVariable),
-            CallEventInvoker()
-            );
+            Instruction.Create(OpCodes.Ldloc, afterVariable));
+
+        index = instructions.Insert(index, CallEventInvoker(property).ToArray());
+
+        return AddBeforeVariableAssignment(index, property, beforeVariable);
+    }
+
+    int AddBeforeAfterInvokerCall(int index, PropertyDefinition property)
+    {
+        var beforeVariable = new VariableDefinition(typeSystem.ObjectReference);
+        setMethodBody.Variables.Add(beforeVariable);
+        var afterVariable = new VariableDefinition(typeSystem.ObjectReference);
+        setMethodBody.Variables.Add(afterVariable);
+
+        index = InsertVariableAssignmentFromCurrentValue(index, property, afterVariable);
+
+        index = instructions.Insert(index,
+            Instruction.Create(OpCodes.Ldarg_0),
+            Instruction.Create(OpCodes.Ldstr, property.Name),
+            Instruction.Create(OpCodes.Ldloc, beforeVariable),
+            Instruction.Create(OpCodes.Ldloc, afterVariable));
+
+        index = instructions.Insert(index, CallEventInvoker(property).ToArray());
 
         return AddBeforeVariableAssignment(index, property, beforeVariable);
     }
@@ -236,9 +261,9 @@ public class PropertyWeaver
 
     int AddBeforeAfterOnChangedCall(int index, PropertyDefinition property, MethodReference methodReference)
     {
-        var beforeVariable = new VariableDefinition(typeSystem.Object);
+        var beforeVariable = new VariableDefinition(typeSystem.ObjectReference);
         setMethodBody.Variables.Add(beforeVariable);
-        var afterVariable = new VariableDefinition(typeSystem.Object);
+        var afterVariable = new VariableDefinition(typeSystem.ObjectReference);
         setMethodBody.Variables.Add(afterVariable);
         index = InsertVariableAssignmentFromCurrentValue(index, property, afterVariable);
 
@@ -278,10 +303,25 @@ public class PropertyWeaver
         return index + 4;
     }
 
-
-    public Instruction CallEventInvoker()
+    public IEnumerable<Instruction> CallEventInvoker(PropertyDefinition propertyDefinition)
     {
-        return Instruction.Create(OpCodes.Callvirt, typeNode.EventInvoker.MethodReference);
+        var method = typeNode.EventInvoker.MethodReference;
+
+        if (method.HasGenericParameters)
+        {
+            var genericMethod = new GenericInstanceMethod(method);
+            genericMethod.GenericArguments.Add(propertyDefinition.PropertyType);
+            method = genericMethod;
+        }
+
+        var instructionList =  new List<Instruction>{Instruction.Create(OpCodes.Callvirt, method)};
+
+        if(method.ReturnType.FullName != typeSystem.VoidReference.FullName)
+        {
+            instructionList.Add(Instruction.Create(OpCodes.Pop));
+        }
+
+        return instructionList;
     }
 
     public Instruction CreateIsChangedInvoker()

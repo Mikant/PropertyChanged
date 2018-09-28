@@ -1,11 +1,10 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using Fody;
 using Mono.Cecil;
 
 public partial class ModuleWeaver
 {
-
-
     void ProcessChildNode(TypeNode node, EventInvokerMethod eventInvoker)
     {
         var childEventInvoker = FindEventInvokerMethod(node.TypeDefinition);
@@ -18,7 +17,7 @@ public partial class ModuleWeaver
                                    {
                                        InvokerType = eventInvoker.InvokerType,
                                        MethodReference = methodReference,
-                                       IsVisibleFromChildren = eventInvoker.IsVisibleFromChildren 
+                                       IsVisibleFromChildren = eventInvoker.IsVisibleFromChildren
                                    };
             }
         }
@@ -32,6 +31,7 @@ public partial class ModuleWeaver
             var error = $"Cannot use '{eventInvoker.MethodReference.FullName}' in '{node.TypeDefinition.FullName}' since that method is not visible from the child class.";
             throw new WeavingException(error);
         }
+        
         node.EventInvoker = eventInvoker;
 
         foreach (var childNode in node.Nodes)
@@ -39,8 +39,6 @@ public partial class ModuleWeaver
             ProcessChildNode(childNode, eventInvoker);
         }
     }
-
-
 
     public EventInvokerMethod RecursiveFindEventInvoker(TypeDefinition typeDefinition)
     {
@@ -50,8 +48,9 @@ public partial class ModuleWeaver
         do
         {
             typeDefinitions.Push(currentTypeDefinition);
-         
-            if (FindEventInvokerMethodDefinition(currentTypeDefinition, out methodDefinition))
+
+            methodDefinition = FindEventInvokerMethodDefinition(currentTypeDefinition);
+            if (methodDefinition != null)
             {
                 break;
             }
@@ -77,40 +76,85 @@ public partial class ModuleWeaver
         return methodDefinition.IsFamilyOrAssembly || methodDefinition.IsFamily || methodDefinition.IsFamilyAndAssembly || methodDefinition.IsPublic;
     }
 
-
     EventInvokerMethod FindEventInvokerMethod(TypeDefinition type)
     {
-        MethodDefinition methodDefinition;
-        if (FindEventInvokerMethodDefinition(type, out methodDefinition))
+        var methodDefinition = FindEventInvokerMethodDefinition(type);
+
+        if (methodDefinition == null || methodDefinition.IsPrivate)
         {
-            var methodReference = ModuleDefinition.ImportReference(methodDefinition);
-            return new EventInvokerMethod
-                       {
-                           MethodReference = methodReference.GetGeneric(),
-                           IsVisibleFromChildren = IsVisibleFromChildren(methodDefinition),
-                           InvokerType = ClassifyInvokerMethod(methodDefinition),
-                       };
+            var overriddenMethod = FindExplicitImplementation(type);
+            if (overriddenMethod != null)
+            {
+                return new EventInvokerMethod
+                {
+                    MethodReference = ModuleDefinition.ImportReference(overriddenMethod).GetGeneric(),
+                    IsVisibleFromChildren = true,
+                    InvokerType = ClassifyInvokerMethod(overriddenMethod)
+                };
+            }
         }
-        return null;
+
+        if (methodDefinition == null)
+            return null;
+
+        var methodReference = ModuleDefinition.ImportReference(methodDefinition);
+        return new EventInvokerMethod
+        {
+            MethodReference = methodReference.GetGeneric(),
+            IsVisibleFromChildren = IsVisibleFromChildren(methodDefinition),
+            InvokerType = ClassifyInvokerMethod(methodDefinition),
+        };
     }
 
-    bool FindEventInvokerMethodDefinition(TypeDefinition type, out MethodDefinition methodDefinition)
+    MethodDefinition FindEventInvokerMethodDefinition(TypeDefinition type)
     {
-        methodDefinition = type.Methods
+        var methodDefinition = type.Methods
             .Where(x => (x.IsFamily || x.IsFamilyAndAssembly || x.IsPublic || x.IsFamilyOrAssembly) && EventInvokerNames.Contains(x.Name))
-            .OrderByDescending(definition => definition.Parameters.Count)
-            .FirstOrDefault(x => IsBeforeAfterMethod(x) || IsSingleStringMethod(x) || IsPropertyChangedArgMethod(x) || IsSenderPropertyChangedArgMethod(x));
+            .OrderByDescending(GetInvokerPriority)
+            .FirstOrDefault(IsEventInvokerMethod);
+
         if (methodDefinition == null)
         {
             methodDefinition = type.Methods
                 .Where(x => EventInvokerNames.Contains(x.Name))
-                .OrderByDescending(definition => definition.Parameters.Count)
-                .FirstOrDefault(x => IsBeforeAfterMethod(x) || IsSingleStringMethod(x) || IsPropertyChangedArgMethod(x) || IsSenderPropertyChangedArgMethod(x));
+                .OrderByDescending(GetInvokerPriority)
+                .FirstOrDefault(IsEventInvokerMethod);
         }
-        return methodDefinition != null;
+
+        return methodDefinition;
     }
 
-    public static InvokerTypes ClassifyInvokerMethod(MethodDefinition method)
+    MethodReference FindExplicitImplementation(TypeDefinition type)
+    {
+        return type.GetAllInterfaces()
+            .Select(i => i.Resolve())
+            .Where(i => i != null && i.IsPublic)
+            .SelectMany(i => i.Methods.Where(m => EventInvokerNames.Contains($"{i.FullName}.{m.Name}")))
+            .OrderByDescending(GetInvokerPriority)
+            .FirstOrDefault(IsEventInvokerMethod);
+    }
+
+    static int GetInvokerPriority(MethodReference method)
+    {
+        if (IsBeforeAfterGenericMethod(method))
+            return 5;
+
+        if (IsBeforeAfterMethod(method))
+            return 4;
+
+        if (IsSenderPropertyChangedArgMethod(method))
+            return 3;
+
+        if (IsPropertyChangedArgMethod(method))
+            return 2;
+
+        if (IsSingleStringMethod(method))
+            return 1;
+
+        return 0;
+    }
+
+    public static InvokerTypes ClassifyInvokerMethod(MethodReference method)
     {
         if (IsSenderPropertyChangedArgMethod(method))
         {
@@ -124,11 +168,24 @@ public partial class ModuleWeaver
         {
             return InvokerTypes.BeforeAfter;
         }
+        if (IsBeforeAfterGenericMethod(method))
+        {
+            return InvokerTypes.BeforeAfterGeneric;
+        }
 
         return InvokerTypes.String;
     }
 
-    public static bool IsSenderPropertyChangedArgMethod(MethodDefinition method)
+    static bool IsEventInvokerMethod(MethodReference method)
+    {
+        return IsBeforeAfterGenericMethod(method)
+               || IsBeforeAfterMethod(method)
+               || IsSingleStringMethod(method)
+               || IsPropertyChangedArgMethod(method)
+               || IsSenderPropertyChangedArgMethod(method);
+    }
+
+    public static bool IsSenderPropertyChangedArgMethod(MethodReference method)
     {
         var parameters = method.Parameters;
         return parameters.Count == 2
@@ -136,21 +193,21 @@ public partial class ModuleWeaver
                && parameters[1].ParameterType.FullName == "System.ComponentModel.PropertyChangedEventArgs";
     }
 
-    public static bool IsPropertyChangedArgMethod(MethodDefinition method)
+    public static bool IsPropertyChangedArgMethod(MethodReference method)
     {
         var parameters = method.Parameters;
         return parameters.Count == 1
                && parameters[0].ParameterType.FullName == "System.ComponentModel.PropertyChangedEventArgs";
     }
 
-    public static bool IsSingleStringMethod(MethodDefinition method)
+    public static bool IsSingleStringMethod(MethodReference method)
     {
         var parameters = method.Parameters;
         return parameters.Count == 1
                && parameters[0].ParameterType.FullName == "System.String";
     }
 
-    public static bool IsBeforeAfterMethod(MethodDefinition method)
+    public static bool IsBeforeAfterMethod(MethodReference method)
     {
         var parameters = method.Parameters;
         return parameters.Count == 3
@@ -159,6 +216,16 @@ public partial class ModuleWeaver
                && parameters[2].ParameterType.FullName == "System.Object";
     }
 
+    public static bool IsBeforeAfterGenericMethod(MethodReference method)
+    {
+        var parameters = method.Parameters;
+        return parameters.Count == 3
+               && method.HasGenericParameters
+               && method.GenericParameters.Count == 1
+               && parameters[0].ParameterType.FullName == "System.String"
+               && parameters[1].ParameterType.FullName == method.GenericParameters[0].FullName
+               && parameters[2].ParameterType.FullName == method.GenericParameters[0].FullName;
+    }
 
     public void FindMethodsForNodes()
     {
@@ -168,12 +235,6 @@ public partial class ModuleWeaver
             if (eventInvoker == null)
             {
                 eventInvoker = AddOnPropertyChangedMethod(notifyNode.TypeDefinition);
-                if (eventInvoker == null)
-                {
-                    var message = string.Format("\tCould not find EventInvoker method on type '{1}'. Possible names are '{0}'. It is possible you are inheriting from a base class and have not correctly set 'EventInvokerNames' or you are using a explicit PropertyChanged event and the event field is not visible to this instance. Please either correct 'EventInvokerNames' or implement your own EventInvoker on this class. No derived types will be processed. If you want to suppress this message place a [DoNotNotifyAttribute] on {1}.", string.Join(", ", EventInvokerNames), notifyNode.TypeDefinition.Name);
-                    LogWarning(message);
-                    continue;
-                }
             }
 
             notifyNode.EventInvoker = eventInvoker;
@@ -184,5 +245,4 @@ public partial class ModuleWeaver
             }
         }
     }
-
 }

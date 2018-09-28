@@ -37,17 +37,16 @@ public partial class ModuleWeaver
         {
             return "Property is abstract.";
         }
-        if ((propertyData.BackingFieldReference == null) && (propertyDefinition.GetMethod == null))
+        if (propertyData.BackingFieldReference == null && propertyDefinition.GetMethod == null)
         {
             return "Property has no field set logic or it contains multiple sets and the names cannot be mapped to a property.";
         }
-        if (invokerType == InvokerTypes.BeforeAfter && (propertyDefinition.GetMethod == null))
+        if (invokerType == InvokerTypes.BeforeAfter && propertyDefinition.GetMethod == null)
         {
             return "When using a before/after invoker the property have a 'get'.";
         }
         return null;
     }
-
 
     public void CheckForWarnings()
     {

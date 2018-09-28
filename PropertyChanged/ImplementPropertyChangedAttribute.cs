@@ -1,20 +1,11 @@
-﻿using System;
-using System.ComponentModel;
+﻿#pragma warning disable 1591
+using System;
 
 namespace PropertyChanged
 {
-
-    /// <summary>
-    /// Specifies that PropertyChanged Notification will be added to a class.
-    /// <para>
-    /// PropertyChanged.Fody will weave the <see cref="INotifyPropertyChanged"/> interface and implementation into the class.
-    /// When the value of a property changes, the PropertyChanged notification will be raised automatically
-    /// </para>
-    /// <para>
-    /// see https://github.com/Fody/PropertyChanged <see href="https://github.com/Fody/PropertyChanged">(link)</see> for more information.
-    /// </para>
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Class, Inherited = false)]
+    [Obsolete(
+        message: "This configuration option has been deprecated. The use of this attribute was to add INotifyPropertyChanged to a class with its associated event definition. After that all classes that implement INotifyPropertyChanged have their properties weaved, weather they have the ImplementPropertyChangedAttribute or not. This attribute was often incorrectly interpreted as an opt in approach to having properties weaved, which was never the intent nor how it ever operated. This attribute has been replaced by AddINotifyPropertyChangedInterfaceAttribute.",
+        error: true)]
     public class ImplementPropertyChangedAttribute : Attribute
     {
     }

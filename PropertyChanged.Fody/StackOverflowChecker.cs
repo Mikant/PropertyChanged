@@ -2,11 +2,10 @@
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using System.Linq;
-
+using Fody;
 
 public partial class ModuleWeaver
 {
-
     void CheckForStackOverflow(IEnumerable<TypeNode> notifyNodes)
     {
         foreach (var node in notifyNodes)
@@ -66,8 +65,8 @@ public partial class ModuleWeaver
                     {
                         continue;
                     }
-                    var operand = instruction.Operand as MethodReference;
-                    if (operand == null)
+
+                    if (!(instruction.Operand is MethodReference operand))
                     {
                         continue;
                     }

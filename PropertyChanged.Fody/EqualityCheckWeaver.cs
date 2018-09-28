@@ -1,6 +1,8 @@
-﻿using System.Linq;
+﻿using System;
+using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 using Mono.Collections.Generic;
 
 public class EqualityCheckWeaver
@@ -37,22 +39,22 @@ public class EqualityCheckWeaver
         var fieldReference = propertyData.BackingFieldReference.Resolve().GetGeneric();
         if (propertyData.BackingFieldReference.FieldType.FullName == propertyData.PropertyDefinition.PropertyType.FullName)
         {
-            InjectEqualityCheck(Instruction.Create(OpCodes.Ldfld, fieldReference), fieldReference.FieldType);   
+            InjectEqualityCheck(Instruction.Create(OpCodes.Ldfld, fieldReference), fieldReference.FieldType, fieldReference.DeclaringType);
         }
     }
-
 
     void CheckAgainstProperty()
     {
         var propertyReference = propertyData.PropertyDefinition;
         var methodDefinition = propertyData.PropertyDefinition.GetMethod.GetGeneric();
-        InjectEqualityCheck(Instruction.Create(OpCodes.Call, methodDefinition), propertyReference.PropertyType);
+        InjectEqualityCheck(Instruction.Create(OpCodes.Call, methodDefinition), propertyReference.PropertyType, propertyReference.DeclaringType);
     }
 
-    void InjectEqualityCheck(Instruction targetInstruction, TypeReference targetType)
+    void InjectEqualityCheck(Instruction targetInstruction, TypeReference targetType, TypeReference declaringType)
     {
         if (ShouldSkipEqualityCheck())
         {
+            typeEqualityFinder.LogDebug($"\t\t\tEquality Check Skipped for {targetType.Name}");
             return;
         }
         var nopInstruction = instructions.First();
@@ -61,6 +63,7 @@ public class EqualityCheckWeaver
             nopInstruction = Instruction.Create(OpCodes.Nop);
             instructions.Insert(0, nopInstruction);
         }
+<<<<<<< HEAD
 
         var comparerRef = typeEqualityFinder.GetEqualityComparer(targetType);
 
@@ -73,6 +76,98 @@ public class EqualityCheckWeaver
             Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
             Instruction.Create(OpCodes.Ret)
         );
+=======
+        if (targetType.Name == "String")
+        {
+            instructions.Prepend(
+                Instruction.Create(OpCodes.Ldarg_0),
+                targetInstruction,
+                Instruction.Create(OpCodes.Ldarg_1),
+                Instruction.Create(OpCodes.Ldc_I4, typeEqualityFinder.OrdinalStringComparison),
+                Instruction.Create(OpCodes.Call, typeEqualityFinder.StringEquals),
+                Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                Instruction.Create(OpCodes.Ret));
+            return;
+        }
+        var typeEqualityMethod = propertyData.EqualsMethod;
+        if (typeEqualityMethod == null)
+        {
+            var supportsCeq = false;
+
+            try
+            {
+                supportsCeq = targetType.SupportsCeq();
+            }
+            catch (Exception ex)
+            {
+                typeEqualityFinder.LogWarning($"Ignoring Ceq of type {targetType.FullName} => {ex.Message}");
+            }
+
+            if (supportsCeq && (targetType.IsValueType || !typeEqualityFinder.CheckForEqualityUsingBaseEquals))
+            {
+                instructions.Prepend(
+                    Instruction.Create(OpCodes.Ldarg_0),
+                    targetInstruction,
+                    Instruction.Create(OpCodes.Ldarg_1),
+                    Instruction.Create(OpCodes.Ceq),
+                    Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                    Instruction.Create(OpCodes.Ret));
+            }
+            else if (targetType.IsValueType && typeEqualityFinder.EqualityComparerTypeReference != null)
+            {
+                var module = typeEqualityFinder.ModuleDefinition;
+                var ec = typeEqualityFinder.EqualityComparerTypeReference.Resolve();
+
+                var specificEqualityComparerType = module.ImportReference(ec.MakeGenericInstanceType(targetType), declaringType);
+                var defaultProperty = module.ImportReference(ec.Properties.Single(p => p.Name == "Default").GetMethod);
+                var equalsMethod = module.ImportReference(ec.Methods.Single(p => p.Name == "Equals" && p.Parameters.Count == 2));
+
+                defaultProperty.DeclaringType = specificEqualityComparerType;
+                equalsMethod.DeclaringType = specificEqualityComparerType;
+
+                instructions.Prepend(
+                    Instruction.Create(OpCodes.Call, defaultProperty),
+                    Instruction.Create(OpCodes.Ldarg_0),
+                    targetInstruction,
+                    Instruction.Create(OpCodes.Ldarg_1),
+                    Instruction.Create(OpCodes.Callvirt, equalsMethod),
+                    Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                    Instruction.Create(OpCodes.Ret));
+            }
+            else if (targetType.IsValueType || targetType.IsGenericParameter)
+            {
+                instructions.Prepend(
+                    Instruction.Create(OpCodes.Ldarg_0),
+                    targetInstruction,
+                    Instruction.Create(OpCodes.Box, targetType),
+                    Instruction.Create(OpCodes.Ldarg_1),
+                    Instruction.Create(OpCodes.Box, targetType),
+                    Instruction.Create(OpCodes.Call, typeEqualityFinder.ObjectEqualsMethod),
+                    Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                    Instruction.Create(OpCodes.Ret));
+            }
+            else
+            {
+                instructions.Prepend(
+                    Instruction.Create(OpCodes.Ldarg_0),
+                    targetInstruction,
+                    Instruction.Create(OpCodes.Ldarg_1),
+                    Instruction.Create(OpCodes.Call, typeEqualityFinder.ObjectEqualsMethod),
+                    Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                    Instruction.Create(OpCodes.Ret));
+            }
+        }
+        else
+        {
+            instructions.Prepend(
+                Instruction.Create(OpCodes.Ldarg_0),
+                targetInstruction,
+                Instruction.Create(OpCodes.Ldarg_1),
+                Instruction.Create(OpCodes.Call, typeEqualityMethod),
+                Instruction.Create(OpCodes.Brfalse_S, nopInstruction),
+                Instruction.Create(OpCodes.Ret));
+        }
+>>>>>>> pr/1
     }
 
     bool ShouldSkipEqualityCheck()
@@ -87,5 +182,4 @@ public class EqualityCheckWeaver
         return typeDefinition.GetAllCustomAttributes().ContainsAttribute(attribute)
                || propertyData.PropertyDefinition.CustomAttributes.ContainsAttribute(attribute);
     }
-
 }

@@ -2,8 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Fody;
 using Mono.Cecil;
-
 
 public partial class ModuleWeaver
 {
@@ -59,7 +59,11 @@ public partial class ModuleWeaver
             {
                 if (HierarchyImplementsINotify(node.TypeDefinition))
                 {
-                    throw new WeavingException($"The type '{node.TypeDefinition.FullName}' already implements INotifyPropertyChanged so [ImplementPropertyChanged] is redundant.");
+                    throw new WeavingException($"The type '{node.TypeDefinition.FullName}' already implements INotifyPropertyChanged so [AddINotifyPropertyChangedInterfaceAttribute] is redundant.");
+                }
+                if (node.TypeDefinition.GetPropertyChangedAddMethods().Any())
+                {
+                    throw new WeavingException($"The type '{node.TypeDefinition.FullName}' already has a PropertyChanged event. If type has a [AddINotifyPropertyChangedInterfaceAttribute] then the PropertyChanged event can be removed.");
                 }
                 InjectINotifyPropertyChangedInterface(node.TypeDefinition);
                 NotifyNodes.Add(node);
@@ -71,7 +75,7 @@ public partial class ModuleWeaver
 
     static bool HasNotifyPropertyChangedAttribute(TypeDefinition typeDefinition)
     {
-        return typeDefinition.CustomAttributes.ContainsAttribute("PropertyChanged.ImplementPropertyChangedAttribute");
+        return typeDefinition.CustomAttributes.ContainsAttribute("PropertyChanged.AddINotifyPropertyChangedInterfaceAttribute");
     }
 
     TypeNode AddClass(TypeDefinition typeDefinition)
@@ -96,7 +100,6 @@ public partial class ModuleWeaver
             parentNode.Nodes.Add(typeNode);
         }
         return typeNode;
-
     }
 
     TypeNode FindClassNode(TypeDefinition type, IEnumerable<TypeNode> typeNode)
@@ -115,5 +118,4 @@ public partial class ModuleWeaver
         }
         return null;
     }
-
 }

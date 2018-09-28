@@ -4,7 +4,6 @@ using Mono.Cecil.Cil;
 
 public partial class ModuleWeaver
 {
-    
     public IEnumerable<string> GetAlreadyNotifies(PropertyDefinition propertyDefinition)
     {
         if (propertyDefinition.SetMethod.IsAbstract)
@@ -17,15 +16,14 @@ public partial class ModuleWeaver
             var instruction = instructions[index];
             foreach (var methodName in EventInvokerNames)
             {
-
-                int propertyNameIndex;
-                if (instruction.IsCallToMethod(methodName, out propertyNameIndex))
+                if (!instruction.IsCallToMethod(methodName, out var propertyNameIndex))
                 {
-                    var before = instructions[index - propertyNameIndex];
-                    if (before.OpCode == OpCodes.Ldstr)
-                    {
-                        yield return (string) before.Operand;
-                    }
+                    continue;
+                }
+                var before = instructions[index - propertyNameIndex];
+                if (before.OpCode == OpCodes.Ldstr)
+                {
+                    yield return (string)before.Operand;
                 }
             }
         }

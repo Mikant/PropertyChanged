@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using Fody;
 using Mono.Cecil;
 
 public partial class ModuleWeaver
@@ -33,8 +34,6 @@ public partial class ModuleWeaver
         }
     }
 
-
-
     public MethodReference RecursiveFindMethod(TypeDefinition typeDefinition)
     {
         var typeDefinitions = new Stack<TypeDefinition>();
@@ -59,11 +58,9 @@ public partial class ModuleWeaver
         return GetMethodReference(typeDefinitions, methodDefinition);
     }
 
-
     MethodReference FindEventInvokerMethodRef(TypeDefinition type)
     {
-        MethodDefinition methodDefinition;
-        if (!FindIsChangedEventInvokerMethodDefinition(type, out methodDefinition))
+        if (!FindIsChangedEventInvokerMethodDefinition(type, out var methodDefinition))
         {
             return null;
         }
@@ -82,12 +79,11 @@ public partial class ModuleWeaver
                             x.SetMethod.IsPublic
             );
 
-
         if (propertyDefinition != null)
         {
-            if (propertyDefinition.PropertyType.FullName != ModuleDefinition.TypeSystem.Boolean.FullName)
+            if (propertyDefinition.PropertyType.FullName != TypeSystem.BooleanDefinition.FullName)
             {
-                LogWarning($"Found '{propertyDefinition.GetName()}' but is was of type '{propertyDefinition.PropertyType.Name}' instead of '{ModuleDefinition.TypeSystem.Boolean.Name}' so it will not be used.");
+                LogWarning($"Found '{propertyDefinition.GetName()}' but is was of type '{propertyDefinition.PropertyType.Name}' instead of '{TypeSystem.BooleanDefinition.Name}' so it will not be used.");
                 return false;
             }
             if (propertyDefinition.SetMethod.IsStatic)

@@ -6,7 +6,7 @@ public partial class ModuleWeaver
 {
     public void InjectINotifyPropertyChangedInterface(TypeDefinition targetType)
     {
-        targetType.Interfaces.Add(PropChangedInterfaceReference);
+        targetType.Interfaces.Add(new InterfaceImplementation(PropChangedInterfaceReference));
         WeaveEvent(targetType);
     }
 
@@ -36,7 +36,7 @@ public partial class ModuleWeaver
                                             MethodAttributes.NewSlot |
                                             MethodAttributes.Virtual;
 
-        var method = new MethodDefinition(methodName, Attributes, ModuleDefinition.TypeSystem.Void);
+        var method = new MethodDefinition(methodName, Attributes, TypeSystem.VoidReference);
 
         method.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, PropChangedHandlerReference));
         var handlerVariable0 = new VariableDefinition(PropChangedHandlerReference);
@@ -66,7 +66,7 @@ public partial class ModuleWeaver
             Instruction.Create(OpCodes.Stloc, handlerVariable0),
             Instruction.Create(OpCodes.Ldloc, handlerVariable0),
             Instruction.Create(OpCodes.Ldloc, handlerVariable1),
-            Instruction.Create(OpCodes.Bne_Un_S, loopBegin), // goto begin of loop
+            Instruction.Create(OpCodes.Bne_Un_S, loopBegin), // go to begin of loop
             Instruction.Create(OpCodes.Ret));
         method.Body.InitLocals = true;
         method.Body.OptimizeMacros();

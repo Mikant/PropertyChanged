@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using Fody;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -6,74 +7,170 @@ public partial class ModuleWeaver
 {
     public EventInvokerMethod AddOnPropertyChangedMethod(TypeDefinition targetType)
     {
-        var propertyChangedField = FindPropertyChangedField(targetType);
-        if (propertyChangedField == null)
-        {
-            return null;
-        }
-
         if (FoundInterceptor)
         {
             if (targetType.HasGenericParameters)
             {
-                var message = $"Error processing '{targetType.Name}'. Interception is not supported on generic types. To manually work around this problem add a [DoNotNotify] to the class and then manually implement INotifyPropertyChanged for that class and all child classes. If you would like this feature handled automatically please feel free to submit a pull request.";
+                var message = $"Error processing '{targetType.Name}'. Interception is not supported on generic types. To manually work around this problem add a [DoNotNotify] to the class and then manually implement INotifyPropertyChanged for that class and all child classes. If you would like this feature handled automatically feel free to submit a pull request.";
                 throw new WeavingException(message);
             }
-            var methodDefinition = GetMethodDefinition(targetType, propertyChangedField);
+
+            var methodDefinition = GetMethodDefinition(targetType, out _);
 
             return new EventInvokerMethod
-                       {
-                           MethodReference = InjectInterceptedMethod(targetType, methodDefinition).GetGeneric(),
-                           InvokerType = InterceptorType,
-                           IsVisibleFromChildren = true,
-                       };
+            {
+                MethodReference = InjectInterceptedMethod(targetType, methodDefinition).GetGeneric(),
+                InvokerType = InterceptorType,
+                IsVisibleFromChildren = true
+            };
         }
+
         return new EventInvokerMethod
-                   {
-                       MethodReference = InjectMethod(targetType, EventInvokerNames.First(), propertyChangedField).GetGeneric(),
-                       InvokerType = InterceptorType,
-                       IsVisibleFromChildren = true,
-                   };
+        {
+            MethodReference = InjectMethod(targetType, out var invokerType).GetGeneric(),
+            InvokerType = invokerType,
+            IsVisibleFromChildren = true
+        };
     }
 
-    MethodDefinition GetMethodDefinition(TypeDefinition targetType, FieldReference propertyChangedField)
+    MethodDefinition GetMethodDefinition(TypeDefinition targetType, out InvokerTypes invokerType)
     {
-        var eventInvokerName = "Inner" + EventInvokerNames.First();
+        var eventInvokerName = $"Inner{EventInvokerNames.First()}";
         var methodDefinition = targetType.Methods.FirstOrDefault(x => x.Name == eventInvokerName);
         if (methodDefinition?.Parameters.Count == 1 && methodDefinition.Parameters[0].ParameterType.FullName == "System.String")
         {
+            invokerType = InvokerTypes.String;
             return methodDefinition;
         }
-        return InjectMethod(targetType, eventInvokerName, propertyChangedField);
+
+        return InjectMethod(targetType, out invokerType);
     }
 
-    MethodDefinition InjectMethod(TypeDefinition targetType, string eventInvokerName, FieldReference propertyChangedField)
+    public FieldDefinition GetEventHandlerField(TypeDefinition targetType)
     {
-        var method = new MethodDefinition(eventInvokerName, GetMethodAttributes(targetType), ModuleDefinition.TypeSystem.Void);
-        method.Parameters.Add(new ParameterDefinition("propertyName", ParameterAttributes.None, ModuleDefinition.TypeSystem.String));
+        var addMethods = targetType.GetPropertyChangedAddMethods().ToList();
+
+        if (!addMethods.Any())
+        {
+            return null;
+        }
+
+        if (addMethods.Count > 1)
+        {
+            throw new WeavingException("Found more than one PropertyChanged event");
+        }
+
+        var fieldReferences = addMethods.Single().Body.Instructions
+            .Where(i => i.OpCode == OpCodes.Ldfld || i.OpCode == OpCodes.Ldflda || i.OpCode == OpCodes.Stfld)
+            .Select(i => i.Operand)
+            .OfType<FieldReference>()
+            .Where(fld => IsPropertyChangedEventHandler(fld.FieldType) || IsFsharpEventHandler(fld.FieldType))
+            .ToList();
+
+        if (fieldReferences.Select(i => i.FullName).Distinct().Count() != 1)
+        {
+            return null;
+        }
+
+        return fieldReferences[0].Resolve();
+    }
+
+    MethodDefinition InjectMethod(TypeDefinition targetType, out InvokerTypes invokerType)
+    {
+        var propertyChangedFieldDef = GetEventHandlerField(targetType);
+        if (propertyChangedFieldDef == null)
+        {
+            var message = $"Could not inject EventInvoker method on type '{targetType.FullName}'. It is possible you are inheriting from a base class and have not correctly set 'EventInvokerNames' or you are using a explicit PropertyChanged event and the event field is not visible to this instance. Either correct 'EventInvokerNames' or implement your own EventInvoker on this class. If you want to suppress this place a [DoNotNotifyAttribute] on {targetType.FullName}.";
+            throw new WeavingException(message);
+        }
+
+        var propertyChangedField = propertyChangedFieldDef.GetGeneric();
+
+        if (IsFsharpEventHandler(propertyChangedFieldDef.FieldType))
+        {
+            invokerType = InvokerTypes.String;
+            return InjectFsharp(targetType, propertyChangedFieldDef);
+        }
+
+        if (FoundInterceptor)
+        {
+            invokerType = InvokerTypes.String;
+            return InjectNormal(targetType, propertyChangedField);
+        }
+
+        invokerType = InvokerTypes.PropertyChangedArg;
+        return InjectEventArgsMethod(targetType, propertyChangedField);
+    }
+
+    MethodDefinition InjectFsharp(TypeDefinition targetType, FieldDefinition fsharpEvent)
+    {
+        var method = new MethodDefinition(injectedEventInvokerName, GetMethodAttributes(targetType), TypeSystem.VoidReference);
+        method.Parameters.Add(new ParameterDefinition("propertyName", ParameterAttributes.None, TypeSystem.StringReference));
+
+        var instructions = method.Body.Instructions;
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldfld, fsharpEvent));
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_1));
+        instructions.Add(Instruction.Create(OpCodes.Newobj, PropertyChangedEventConstructorReference));
+        instructions.Add(Instruction.Create(OpCodes.Tail));
+        instructions.Add(Instruction.Create(OpCodes.Callvirt, Trigger.Value));
+        instructions.Add(Instruction.Create(OpCodes.Ret));
+        method.Body.InitLocals = true;
+        targetType.Methods.Add(method);
+        return method;
+    }
+
+    MethodDefinition InjectNormal(TypeDefinition targetType, FieldReference propertyChangedField)
+    {
+        var method = new MethodDefinition(injectedEventInvokerName, GetMethodAttributes(targetType), TypeSystem.VoidReference);
+        method.Parameters.Add(new ParameterDefinition("propertyName", ParameterAttributes.None, TypeSystem.StringReference));
 
         var handlerVariable = new VariableDefinition(PropChangedHandlerReference);
         method.Body.Variables.Add(handlerVariable);
-        var boolVariable = new VariableDefinition(ModuleDefinition.TypeSystem.Boolean);
-        method.Body.Variables.Add(boolVariable);
 
         var instructions = method.Body.Instructions;
 
         var last = Instruction.Create(OpCodes.Ret);
         instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
-        instructions.Add(Instruction.Create(OpCodes.Ldfld, propertyChangedField)); 
+        instructions.Add(Instruction.Create(OpCodes.Ldfld, propertyChangedField));
         instructions.Add(Instruction.Create(OpCodes.Stloc_0));
         instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
-        instructions.Add(Instruction.Create(OpCodes.Ldnull));
-        instructions.Add(Instruction.Create(OpCodes.Ceq));
-        instructions.Add(Instruction.Create(OpCodes.Stloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Brtrue_S, last));
+        instructions.Add(Instruction.Create(OpCodes.Brfalse_S, last));
         instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
         instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
         instructions.Add(Instruction.Create(OpCodes.Ldarg_1));
-        instructions.Add(Instruction.Create(OpCodes.Newobj, ComponentModelPropertyChangedEventConstructorReference));
-        instructions.Add(Instruction.Create(OpCodes.Callvirt, ComponentModelPropertyChangedEventHandlerInvokeReference));
+        instructions.Add(Instruction.Create(OpCodes.Newobj, PropertyChangedEventConstructorReference));
+        instructions.Add(Instruction.Create(OpCodes.Tail));
+        instructions.Add(Instruction.Create(OpCodes.Callvirt, PropertyChangedEventHandlerInvokeReference));
+
+        instructions.Add(last);
+        method.Body.InitLocals = true;
+        targetType.Methods.Add(method);
+        return method;
+    }
+
+    MethodDefinition InjectEventArgsMethod(TypeDefinition targetType, FieldReference propertyChangedField)
+    {
+        var method = new MethodDefinition(injectedEventInvokerName, GetMethodAttributes(targetType), TypeSystem.VoidReference);
+        method.Parameters.Add(new ParameterDefinition("eventArgs", ParameterAttributes.None, PropertyChangedEventArgsReference));
+
+        var handlerVariable = new VariableDefinition(PropChangedHandlerReference);
+        method.Body.Variables.Add(handlerVariable);
+
+        var instructions = method.Body.Instructions;
+
+        var last = Instruction.Create(OpCodes.Ret);
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldfld, propertyChangedField));
+        instructions.Add(Instruction.Create(OpCodes.Stloc_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
+        instructions.Add(Instruction.Create(OpCodes.Brfalse_S, last));
+        instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+        instructions.Add(Instruction.Create(OpCodes.Ldarg_1));
+        instructions.Add(Instruction.Create(OpCodes.Tail));
+        instructions.Add(Instruction.Create(OpCodes.Callvirt, PropertyChangedEventHandlerInvokeReference));
 
         instructions.Add(last);
         method.Body.InitLocals = true;
@@ -85,79 +182,23 @@ public partial class ModuleWeaver
     {
         if (targetType.IsSealed)
         {
-            return MethodAttributes.Public | MethodAttributes.HideBySig;
+            return MethodAttributes.Private | MethodAttributes.HideBySig;
         }
-        return MethodAttributes.Virtual | MethodAttributes.Public | MethodAttributes.NewSlot;
+
+        return MethodAttributes.Family | MethodAttributes.HideBySig;
     }
 
-    public static FieldReference FindPropertyChangedField(TypeDefinition targetType)
+    static bool IsPropertyChangedEventHandler(TypeReference type)
     {
-        var findPropertyChangedField = targetType.Fields.FirstOrDefault(x => IsPropertyChangedEventHandler(x.FieldType));
-        return findPropertyChangedField?.GetGeneric();
+        return type.FullName == "System.ComponentModel.PropertyChangedEventHandler"
+               || type.FullName == "Windows.UI.Xaml.Data.PropertyChangedEventHandler"
+               || type.FullName == "System.Runtime.InteropServices.WindowsRuntime.EventRegistrationTokenTable`1<Windows.UI.Xaml.Data.PropertyChangedEventHandler>";
     }
 
-    MethodDefinition InjectInterceptedMethod(TypeDefinition targetType, MethodDefinition innerOnPropertyChanged)
+    static bool IsFsharpEventHandler(TypeReference type)
     {
-        var delegateHolderInjector = new DelegateHolderInjector
-                                     {
-                                         TargetTypeDefinition = targetType,
-                                         OnPropertyChangedMethodReference = innerOnPropertyChanged,
-                                         ModuleWeaver = this,
-                                     };
-        delegateHolderInjector.InjectDelegateHolder();
-        var method = new MethodDefinition(EventInvokerNames.First(), GetMethodAttributes(targetType), ModuleDefinition.TypeSystem.Void);
-
-        var propertyName = new ParameterDefinition("propertyName", ParameterAttributes.None, ModuleDefinition.TypeSystem.String);
-        method.Parameters.Add(propertyName);
-        if (InterceptorType == InvokerTypes.BeforeAfter)
-        {
-            var before = new ParameterDefinition("before", ParameterAttributes.None, ModuleDefinition.TypeSystem.Object);
-            method.Parameters.Add(before);
-            var after = new ParameterDefinition("after", ParameterAttributes.None, ModuleDefinition.TypeSystem.Object);
-            method.Parameters.Add(after);
-        }
-
-        var action = new VariableDefinition("firePropertyChanged", ActionTypeReference);
-        method.Body.Variables.Add(action);
-
-        var variableDefinition = new VariableDefinition("delegateHolder", delegateHolderInjector.TypeDefinition);
-        method.Body.Variables.Add(variableDefinition);
-
-
-        var instructions = method.Body.Instructions;
-
-        var last = Instruction.Create(OpCodes.Ret);
-        instructions.Add(Instruction.Create(OpCodes.Newobj, delegateHolderInjector.ConstructorDefinition));
-        instructions.Add(Instruction.Create(OpCodes.Stloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldarg_1));
-        instructions.Add(Instruction.Create(OpCodes.Stfld, delegateHolderInjector.PropertyNameField));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
-        instructions.Add(Instruction.Create(OpCodes.Stfld, delegateHolderInjector.TargetField));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldftn, delegateHolderInjector.MethodDefinition));
-        instructions.Add(Instruction.Create(OpCodes.Newobj, ActionConstructorReference));
-        instructions.Add(Instruction.Create(OpCodes.Stloc_0));
-        instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
-        instructions.Add(Instruction.Create(OpCodes.Ldloc_1));
-        instructions.Add(Instruction.Create(OpCodes.Ldfld, delegateHolderInjector.PropertyNameField));
-        if (InterceptorType == InvokerTypes.BeforeAfter)
-        {
-            instructions.Add(Instruction.Create(OpCodes.Ldarg_2));
-            instructions.Add(Instruction.Create(OpCodes.Ldarg_3));
-            instructions.Add(Instruction.Create(OpCodes.Call, InterceptMethod));
-        }
-        else
-        {
-            instructions.Add(Instruction.Create(OpCodes.Call, InterceptMethod));
-        }
-
-        instructions.Add(last);
-        method.Body.InitLocals = true;
-
-        targetType.Methods.Add(method);
-        return method;
+        return type.FullName == "Microsoft.FSharp.Control.FSharpEvent`2<System.ComponentModel.PropertyChangedEventHandler,System.ComponentModel.PropertyChangedEventArgs>";
     }
+
+    const string injectedEventInvokerName = "<>OnPropertyChanged";
 }

@@ -1,27 +1,13 @@
-﻿using System;
-using System.Xml.Linq;
-using Mono.Cecil;
+﻿using Fody;
 
-public partial class ModuleWeaver
+public partial class ModuleWeaver: BaseModuleWeaver
 {
-    public XElement Config { get; set; }
-    public Action<string> LogDebug { get; set; }
-    public Action<string> LogInfo { get; set; }
-    public Action<string> LogWarning { get; set; }
-    public IAssemblyResolver AssemblyResolver { get; set; }
-    public ModuleDefinition ModuleDefinition { get; set; }
-
-    public ModuleWeaver()
-    {
-        LogWarning = s => { };
-        LogInfo = s => { };
-        LogDebug = s => { };
-    }
-
-    public void Execute()
+    public override void Execute()
     {
         ResolveOnPropertyNameChangedConfig();
         ResolveCheckForEqualityConfig();
+        ResolveCheckForEqualityUsingBaseEqualsConfig();
+        ResolveUseStaticEqualsFromBaseConfig();
         ResolveEventInvokerName();
         FindCoreReferences();
         FindInterceptor();
@@ -39,9 +25,15 @@ public partial class ModuleWeaver
         CheckForWarnings();
         ProcessOnChangedMethods();
         CheckForStackOverflow();
+<<<<<<< HEAD
+=======
+        FindComparisonMethods();
+        InitEventArgsCache();
+>>>>>>> pr/1
         ProcessTypes();
+        InjectEventArgsCache();
         CleanAttributes();
-        CleanReferences();
     }
-}
 
+    public override bool ShouldCleanReference => true;
+}

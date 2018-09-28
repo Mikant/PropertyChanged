@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using Fody;
 using Mono.Cecil;
 
 public partial class ModuleWeaver
@@ -30,7 +31,7 @@ public partial class ModuleWeaver
         {
             if (methodDefinition.ReturnType.FullName != "System.Void")
             {
-                var message = $"The type {notifyNode.TypeDefinition.FullName} has a On_PropertyName_Changed method ({methodDefinition.Name}) that has a non void return value. Please make the return type void.";
+                var message = $"The type {notifyNode.TypeDefinition.FullName} has a On_PropertyName_Changed method ({methodDefinition.Name}) that has a non void return value. Ensure the return type void.";
                 throw new WeavingException(message);
             }
             var typeDefinitions = new Stack<TypeDefinition>();
@@ -51,7 +52,7 @@ public partial class ModuleWeaver
                     OnChangedType = OnChangedTypes.BeforeAfter,
                     MethodReference = GetMethodReference(typeDefinitions, methodDefinition)
                 };
-            }            
+            }
         }
     }
 

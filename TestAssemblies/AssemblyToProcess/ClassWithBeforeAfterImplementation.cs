@@ -4,7 +4,6 @@ using PropertyChanged;
 
 public class ClassWithBeforeAfterImplementation : INotifyPropertyChanged
 {
-
     public string Property1 { get; set; }
     [DependsOn("Property1")]
     public string Property2 { get; set; }
@@ -26,7 +25,7 @@ public class ClassWithBeforeAfterImplementation : INotifyPropertyChanged
             var name = value.GetType().Name;
             if (name != "String")
             {
-                throw new Exception($"Value shoud be string but is '{name}'.");
+                throw new Exception($"Value should be string but is '{name}'.");
             }
         }
     }

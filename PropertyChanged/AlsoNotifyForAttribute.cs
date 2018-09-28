@@ -9,7 +9,7 @@ namespace PropertyChanged
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
     public class AlsoNotifyForAttribute : Attribute
     {
-        
+
         ///<summary>
         /// Initializes a new instance of <see cref="DependsOnAttribute"/>.
         ///</summary>
@@ -26,7 +26,6 @@ namespace PropertyChanged
         public AlsoNotifyForAttribute(string property, params string[] otherProperties)
         {
         }
-
     }
 }
 // ReSharper restore UnusedParameter.Local

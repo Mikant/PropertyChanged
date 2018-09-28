@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using Fody;
 using Mono.Cecil;
 
 public partial class ModuleWeaver
@@ -43,7 +44,6 @@ or
 Intercept(object target, Action firePropertyChanged, string propertyName, object before, object after)";
         throw new WeavingException(message);
     }
-
 
     public bool IsSingleStringInterceptionMethod(MethodDefinition method)
     {

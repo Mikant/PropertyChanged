@@ -2,6 +2,7 @@
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 
 public static class CecilExtensions
 {
@@ -17,15 +18,17 @@ public static class CecilExtensions
         {
             return false;
         }
-        var methodReference = instruction.Operand as MethodReference;
-        if (methodReference == null)
+
+        if (!(instruction.Operand is MethodReference methodReference))
         {
             return false;
         }
+
         if (methodReference.Name != methodName)
         {
             return false;
         }
+
         var parameterDefinition = methodReference.Parameters.FirstOrDefault(x => x.Name == "propertyName");
         if (parameterDefinition != null)
         {
@@ -37,7 +40,7 @@ public static class CecilExtensions
 
     public static bool IsCall(this OpCode opCode)
     {
-        return (opCode.Code == Code.Call) || (opCode.Code == Code.Callvirt);
+        return opCode.Code == Code.Call || opCode.Code == Code.Callvirt;
     }
 
     public static FieldReference GetGeneric(this FieldDefinition definition)
@@ -49,6 +52,7 @@ public static class CecilExtensions
             {
                 declaringType.GenericArguments.Add(parameter);
             }
+
             return new FieldReference(definition.Name, definition.FieldType, declaringType);
         }
 
@@ -64,14 +68,35 @@ public static class CecilExtensions
             {
                 declaringType.GenericArguments.Add(parameter);
             }
+
             var methodReference = new MethodReference(reference.Name, reference.MethodReturnType.ReturnType, declaringType);
             foreach (var parameterDefinition in reference.Parameters)
             {
                 methodReference.Parameters.Add(parameterDefinition);
             }
+
             methodReference.HasThis = reference.HasThis;
             return methodReference;
         }
+
+        return reference;
+    }
+
+    public static MethodReference MakeGeneric(this MethodReference self, params TypeReference[] arguments)
+    {
+        var reference = new MethodReference(self.Name, self.ReturnType)
+        {
+            HasThis = self.HasThis,
+            ExplicitThis = self.ExplicitThis,
+            DeclaringType = self.DeclaringType.MakeGenericInstanceType(arguments),
+            CallingConvention = self.CallingConvention,
+        };
+
+        foreach (var parameter in self.Parameters)
+            reference.Parameters.Add(new ParameterDefinition(parameter.ParameterType));
+
+        foreach (var genericParameter in self.GenericParameters)
+            reference.GenericParameters.Add(new GenericParameter(genericParameter.Name, reference));
 
         return reference;
     }
@@ -83,14 +108,14 @@ public static class CecilExtensions
             yield return attribute;
         }
 
-        var baseDefinition = typeDefinition.BaseType as TypeDefinition;
-
-        if (baseDefinition != null)
+        if (!(typeDefinition.BaseType is TypeDefinition baseDefinition))
         {
-            foreach (var attribute in baseDefinition.GetAllCustomAttributes())
-            {
-                yield return attribute;
-            }
+            yield break;
+        }
+
+        foreach (var attribute in baseDefinition.GetAllCustomAttributes())
+        {
+            yield return attribute;
         }
     }
 
@@ -107,5 +132,21 @@ public static class CecilExtensions
     public static bool ContainsAttribute(this IEnumerable<CustomAttribute> attributes, string attributeName)
     {
         return attributes.Any(attribute => attribute.Constructor.DeclaringType.FullName == attributeName);
+    }
+
+    public static IEnumerable<TypeReference> GetAllInterfaces(this TypeDefinition type)
+    {
+        while (type != null)
+        {
+            if (type.HasInterfaces)
+            {
+                foreach (var iface in type.Interfaces)
+                {
+                    yield return iface.InterfaceType;
+                }
+            }
+
+            type = type.BaseType?.Resolve();
+        }
     }
 }
